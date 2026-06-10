@@ -32,4 +32,7 @@ Thumbs.db
 *.swp
 tmp*/
 
+# CLLM run artifacts (kept locally, not in git)
+cllm/results/
+
 .omc
