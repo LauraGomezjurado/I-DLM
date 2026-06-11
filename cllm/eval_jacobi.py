@@ -117,6 +117,10 @@ def main():
             total_fwd += stats["forward_passes"]; total_tok += stats["tokens"]
             total_secs += stats.get("seconds", 0.0)
 
+        # Cap to the same token budget greedy gets: blockwise Jacobi can overshoot
+        # max_new_tokens by up to n-1 tokens, which would unfairly let it complete
+        # answers greedy truncates. Trim so the two paths use an equal budget.
+        new_ids = new_ids[:args.max_new_tokens]
         text = tok.decode(new_ids, skip_special_tokens=True)
         if extract_pred(text) == extract_gold(ex["answer"]):
             correct += 1

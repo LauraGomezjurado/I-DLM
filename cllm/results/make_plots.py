@@ -89,17 +89,23 @@ ax.set_title("Forward-pass cost: distillation cuts ~20% at both scales")
 ax.legend(); ax.set_ylim(0, 1.2)
 fig.tight_layout(); fig.savefig(f"{OUT}/fwd_per_token.png", dpi=140); plt.close(fig)
 
-# ---- Plot 2: accuracy -------------------------------------------------------
-fig, ax = plt.subplots(figsize=(7, 4.5))
+# ---- Plot 2: accuracy (with standard-error bars; eval N per scale) ----------
+NQ = {"Qwen2.5-1.5B (200 Q)": 200, "Qwen3-8B (100 Q)": 100}
+fig, ax = plt.subplots(figsize=(7.5, 4.5))
 for j, dec in enumerate(DECODERS):
     vals = [RESULTS[s][dec]["acc"] * 100 for s in scales]
-    bars = ax.bar(x + (j - 1) * w, vals, w, label=dec, color=COLORS[dec])
+    # binomial SE = sqrt(p(1-p)/N), in percent
+    ses = [100 * np.sqrt((RESULTS[s][dec]["acc"] * (1 - RESULTS[s][dec]["acc"]) / NQ[s]))
+           for s in scales]
+    bars = ax.bar(x + (j - 1) * w, vals, w, yerr=ses, capsize=4,
+                  label=dec, color=COLORS[dec], error_kw={"alpha": 0.7})
     for b, v in zip(bars, vals):
-        ax.text(b.get_x() + b.get_width() / 2, v + 0.4, f"{v:.1f}",
+        ax.text(b.get_x() + b.get_width() / 2, v + 4.5, f"{v:.1f}",
                 ha="center", va="bottom", fontsize=8)
 ax.set_xticks(x); ax.set_xticklabels(scales)
 ax.set_ylabel("GSM8K accuracy (%)")
-ax.set_title("Quality preserved: accuracy ~flat across decoders (within noise)")
+ax.set_title("Accuracy unchanged within standard error (bars = binomial SE)\n"
+             "note: greedy vs Jacobi paths not yet length-matched (see RESULTS.md caveat A)")
 ax.legend(loc="lower right"); ax.set_ylim(0, 100)
 fig.tight_layout(); fig.savefig(f"{OUT}/accuracy.png", dpi=140); plt.close(fig)
 
