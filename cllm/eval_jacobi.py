@@ -20,11 +20,12 @@ Usage:
 """
 import argparse
 import re
+import time
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from jacobi import jacobi_generate
+from jacobi import jacobi_generate, jacobi_generate_cached
 
 
 def build_prompt(tokenizer, question):
@@ -66,6 +67,10 @@ def main():
                     help="float16 on V100 (bf16 is emulated/slow pre-Ampere)")
     ap.add_argument("--device", default="cuda",
                     help='"cuda", "auto" (shard 8B across GPUs), or e.g. "cuda:0"')
+    ap.add_argument("--cached", action="store_true",
+                    help="use the KV-cache Jacobi decoder (wall-clock optimized)")
+    ap.add_argument("--merge-lora", action="store_true",
+                    help="merge LoRA into base weights before eval (removes per-forward adapter tax)")
     args = ap.parse_args()
 
     device_map = "auto" if args.device == "auto" else args.device
@@ -81,39 +86,56 @@ def main():
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.lora_adapter).eval()
         print(f"Loaded LoRA adapter: {args.lora_adapter}")
+        if args.merge_lora:
+            model = model.merge_and_unload()    # fold LoRA into base weights -> no per-forward tax
+            print("Merged LoRA into base weights (no adapter overhead at inference)")
 
     ds = load_dataset("openai/gsm8k", "main", split="test").select(range(args.num))
 
     correct, total_fwd, total_tok = 0, 0, 0
+    total_secs = 0.0
     for i, ex in enumerate(ds):
         prompt = build_prompt(tok, ex["question"])
         ids = tok(prompt, return_tensors="pt").input_ids.to(dev)
 
         if args.mode == "greedy":
+            if dev.startswith("cuda"):
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
             with torch.inference_mode():
                 out = model.generate(ids, max_new_tokens=args.max_new_tokens,
                                      do_sample=False, pad_token_id=tok.pad_token_id)
+            if dev.startswith("cuda"):
+                torch.cuda.synchronize()
             new_ids = out[0, ids.shape[1]:].tolist()
+            total_secs += time.perf_counter() - t0
             total_fwd += len(new_ids); total_tok += len(new_ids)   # AR: 1 fwd/token
         else:
-            new_ids, stats = jacobi_generate(
+            gen = jacobi_generate_cached if args.cached else jacobi_generate
+            new_ids, stats = gen(
                 model, tok, ids, args.n, args.max_new_tokens, device=dev)
             total_fwd += stats["forward_passes"]; total_tok += stats["tokens"]
+            total_secs += stats.get("seconds", 0.0)
 
         text = tok.decode(new_ids, skip_special_tokens=True)
         if extract_pred(text) == extract_gold(ex["answer"]):
             correct += 1
         if (i + 1) % 25 == 0:
             print(f"  {i + 1}/{len(ds)}  acc={correct / (i + 1):.3f}  "
-                  f"fwd/tok={total_fwd / max(total_tok, 1):.3f}")
+                  f"fwd/tok={total_fwd / max(total_tok, 1):.3f}  "
+                  f"tok/s={total_tok / max(total_secs, 1e-9):.1f}")
 
+    decoder = ("greedy" if args.mode == "greedy"
+               else ("jacobi-cached" if args.cached else "jacobi-full"))
     print("\n==== RESULT ====")
-    print(f"mode          : {args.mode}"
+    print(f"decoder       : {decoder}"
           + (f" + LoRA({args.lora_adapter})" if args.lora_adapter else ""))
     print(f"n (block)     : {args.n if args.mode == 'jacobi' else '-'}")
     print(f"accuracy      : {correct / len(ds):.4f}  ({correct}/{len(ds)})")
     print(f"fwd_per_token : {total_fwd / max(total_tok, 1):.4f}  "
           f"(greedy=1.0; lower=faster)")
+    print(f"tokens_per_sec: {total_tok / max(total_secs, 1e-9):.2f}  "
+          f"({total_tok} tok / {total_secs:.1f}s)  [wall-clock]")
 
 
 if __name__ == "__main__":

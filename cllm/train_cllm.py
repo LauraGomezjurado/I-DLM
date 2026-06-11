@@ -60,20 +60,19 @@ def cllm_loss(model, trajectory, labels, w_ar, device):
     # --- global consistency: random intermediate point -> fixed point ---
     i = random.randrange(len(trajectory) - 1) if len(trajectory) > 1 else 0
     point = trajectory[i].unsqueeze(0).to(device)
-    logits_i = model(point).logits                            # student (grad)
-    with torch.no_grad():
-        logits_fp = model(fixed_pt).logits                   # teacher (stop-grad)
+    logits_i = model(point).logits                            # student at intermediate point (grad)
+    # One fixed-point forward (with grad), reused for BOTH terms: the AR loss uses
+    # it directly; the consistency target is the same logits stop-grad'd (teacher).
+    logits_fp = model(fixed_pt).logits
 
     pad_mask = (labels == IGNORE)                            # mask context + padding
     loss_global = soft_cross_entropy(
-        logits_i[:, :-1], logits_fp[:, :-1], pad_mask[:, :-1])
+        logits_i[:, :-1], logits_fp[:, :-1].detach(), pad_mask[:, :-1])
 
     # --- AR loss on the fixed-point block (self-distillation anchor) ---
     V = logits_fp.size(-1)
-    # AR target is computed under grad so it actually trains the weights.
-    logits_ar = model(fixed_pt).logits
     loss_ar = F.cross_entropy(
-        logits_ar[:, :-1].reshape(-1, V), labels[:, 1:].reshape(-1),
+        logits_fp[:, :-1].reshape(-1, V), labels[:, 1:].reshape(-1),
         ignore_index=IGNORE)
 
     return w_ar * loss_ar + loss_global, loss_ar.item(), loss_global.item()

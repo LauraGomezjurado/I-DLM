@@ -105,6 +105,86 @@ def jacobi_generate(model, tokenizer, prompt_ids, n, max_new_tokens,
 
 
 @torch.inference_mode()
+def jacobi_generate_cached(model, tokenizer, prompt_ids, n, max_new_tokens,
+                           device="cuda", max_iters_per_block=512):
+    """
+    KV-cache Jacobi decoding -- the wall-clock-optimized decoder.
+
+    Unlike jacobi_generate (which re-runs the whole [prompt, block] every iteration),
+    this prefills the prompt ONCE into a DynamicCache and then forwards only the
+    n-token block each Jacobi iteration, attending to the cached prompt+accepted KV.
+    The provisional block KV is dropped (cache.crop) before each iteration and kept
+    permanently only once the block converges. Per-iteration cost drops from
+    O(prompt+generated) to O(n) -> real tokens/sec speedup, and because it uses the
+    exact AR cache path the output matches greedy without the fp16 drift of the
+    full-recompute path.
+
+    Returns (new_token_ids, stats) with the same keys as jacobi_generate plus
+    "seconds" and "tokens_per_sec".
+    """
+    import time
+    from transformers import DynamicCache
+
+    eos = tokenizer.eos_token_id
+    pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos
+    prompt_ids = prompt_ids.to(device)
+
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+
+    # --- prefill prompt once ---
+    cache = DynamicCache()
+    out = model(prompt_ids, past_key_values=cache, use_cache=True)
+    first_tok_logit = out.logits[:, -1, :]              # predicts the first generated token
+    cache_len = cache.get_seq_length()                 # == prompt length
+
+    generated, total_iters = [], 0
+    while len(generated) < max_new_tokens:
+        # seed block: position 0 is the greedy next token (fixed); rest repeat it
+        first_tok = first_tok_logit.argmax(-1)          # [1]
+        block = first_tok.view(1, 1).expand(1, n).clone()
+
+        it = 0
+        while True:
+            cache.crop(cache_len)                       # drop provisional block KV
+            pos = torch.arange(cache_len, cache_len + n, device=device)
+            out = model(block, past_key_values=cache, use_cache=True, cache_position=pos)
+            it += 1
+            logits = out.logits[0]                      # [n, V]
+            new_block = block.clone()
+            new_block[0, 1:] = logits[:-1].argmax(-1)   # pos i+1 predicted by logits[i]
+            # new_block[0,0] stays = greedy first token
+            if torch.equal(new_block, block) or it >= max_iters_per_block:
+                block = new_block
+                break
+            block = new_block
+
+        total_iters += it
+        cache_len += n                                  # keep converged block KV
+        first_tok_logit = logits[-1:].clone()           # predicts next block's first token
+
+        toks = block[0].tolist()
+        if eos in toks:
+            toks = toks[:toks.index(eos) + 1]
+            generated.extend(toks)
+            break
+        generated.extend(toks)
+
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    secs = time.perf_counter() - t0
+    produced = len(generated)
+    return generated, {
+        "forward_passes": total_iters,
+        "tokens": produced,
+        "fwd_per_token": total_iters / max(produced, 1),
+        "seconds": secs,
+        "tokens_per_sec": produced / max(secs, 1e-9),
+    }
+
+
+@torch.inference_mode()
 def verify_fixed_point_matches_greedy(model, tokenizer, prompt_ids, n, device="cuda"):
     """Sanity check: one Jacobi block's fixed point must equal greedy decoding."""
     pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
