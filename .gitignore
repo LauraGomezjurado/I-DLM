@@ -32,7 +32,8 @@ Thumbs.db
 *.swp
 tmp*/
 
-# CLLM run artifacts (kept locally, not in git)
-cllm/results/
+# CLLM run artifacts: keep the docs + plots, exclude big adapters and logs
+cllm/results/*-adapter/
+cllm/results/*.log
 
 .omc
