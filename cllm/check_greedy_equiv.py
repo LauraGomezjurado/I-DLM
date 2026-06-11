@@ -59,9 +59,15 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=getattr(torch, args.dtype),
-        trust_remote_code=True, device_map=args.device).eval()
+    # cuda can shard via device_map; cpu/mps load then move.
+    if args.device.startswith("cuda") or args.device == "auto":
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, torch_dtype=getattr(torch, args.dtype),
+            trust_remote_code=True, device_map=args.device).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, torch_dtype=getattr(torch, args.dtype),
+            trust_remote_code=True).to(args.device).eval()
     gen = jacobi_generate_cached if args.decoder == "cached" else jacobi_generate
 
     ds = load_dataset("openai/gsm8k", "main", split="test").select(range(args.num))
@@ -70,8 +76,12 @@ def main():
     for i, ex in enumerate(ds):
         ids = tok(build_prompt(tok, ex["question"]), return_tensors="pt").input_ids.to(args.device)
         with torch.inference_mode():
+            # PURE argmax: override Qwen's generation_config (repetition_penalty=1.1,
+            # do_sample=True), else "greedy" != Jacobi's pure argmax.
             g = model.generate(ids, max_new_tokens=args.max_new_tokens,
-                               do_sample=False, pad_token_id=tok.pad_token_id)
+                               do_sample=False, repetition_penalty=1.0,
+                               temperature=None, top_p=None, top_k=None,
+                               pad_token_id=tok.pad_token_id)
         greedy_ids = g[0, ids.shape[1]:].tolist()
         jac_ids, _ = gen(model, tok, ids, args.n, args.max_new_tokens, device=args.device)
         jac_ids = jac_ids[:args.max_new_tokens]

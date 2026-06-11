@@ -73,15 +73,21 @@ def main():
                     help="merge LoRA into base weights before eval (removes per-forward adapter tax)")
     args = ap.parse_args()
 
-    device_map = "auto" if args.device == "auto" else args.device
     dev = "cuda:0" if args.device == "auto" else args.device
 
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=getattr(torch, args.dtype),
-        trust_remote_code=True, device_map=device_map).eval()
+    # cuda can shard via device_map; cpu/mps load then move.
+    if args.device.startswith("cuda") or args.device == "auto":
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, torch_dtype=getattr(torch, args.dtype),
+            trust_remote_code=True,
+            device_map=("auto" if args.device == "auto" else args.device)).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, torch_dtype=getattr(torch, args.dtype),
+            trust_remote_code=True).to(args.device).eval()
     if args.lora_adapter:
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.lora_adapter).eval()
@@ -103,8 +109,13 @@ def main():
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
             with torch.inference_mode():
+                # PURE argmax greedy: override the model's generation_config
+                # (Qwen ships repetition_penalty=1.1, do_sample=True) so the greedy
+                # baseline is the SAME objective Jacobi's argmax fixed point targets.
                 out = model.generate(ids, max_new_tokens=args.max_new_tokens,
-                                     do_sample=False, pad_token_id=tok.pad_token_id)
+                                     do_sample=False, repetition_penalty=1.0,
+                                     temperature=None, top_p=None, top_k=None,
+                                     pad_token_id=tok.pad_token_id)
             if dev.startswith("cuda"):
                 torch.cuda.synchronize()
             new_ids = out[0, ids.shape[1]:].tolist()
