@@ -6,12 +6,16 @@ Code: [`cllm/`](../).
 
 ## TL;DR
 
-1. **Jacobi decoding is provably greedy-equivalent** — 100% token-identical to pure
-   argmax in fp32 ([`plots/greedy_equivalence.png`](plots/greedy_equivalence.png)).
-2. **Consistency distillation cuts forward-passes-per-token ~24% at iso-accuracy**
-   (1.000 → 0.759 at 1.5B; 1.000 → 0.808 in the 8B run). Hardware-independent metric.
-3. **Wall-clock speedup is real but hardware-dependent**: 1.10× on M2/MPS vs pure
-   greedy; 1.54× on V100 vs HF `generate()`. Forward-pass reduction is the robust claim.
+1. **Jacobi decoding is greedy-equivalent** — 100% token-identical to pure argmax
+   **in fp32** ([`plots/greedy_equivalence.png`](plots/greedy_equivalence.png)); in
+   fp16 it matches to within small late-token drift (98.8% cached).
+2. **Consistency distillation cuts forward-passes-per-token at iso-accuracy** —
+   **~24% at 1.5B** (1.000 → 0.759) and **~19% at 8B** (1.000 → 0.808). The two scales
+   differ; both reported. Hardware-independent metric.
+3. **Wall-clock speedup is real but smaller than the pass-count implies and
+   hardware-dependent**: 1.10× on M2/MPS vs pure greedy (the 0.759 pass count alone
+   would suggest ~1.32× — see §3); 1.54× on V100 vs HF `generate()`. Forward-pass
+   reduction is the robust claim.
 
 ---
 
@@ -49,10 +53,16 @@ greedy's KV arithmetic) is closer than the full-recompute one. Plot:
 | Jacobi-pre | 37.0% | 0.952 | 22.76 |
 | **Jacobi-post (distilled)** | 37.0% | **0.759** | **27.24** |
 
-- **Iso-accuracy is now clean**: identical 37.0% across all three (greedy==Jacobi-pre
-  exact; distillation preserves it). Plots:
+- **Iso-accuracy is now clean**: identical 37.0% across all three. greedy==Jacobi-pre
+  is **exact in fp32**; in *this* fp16/MPS table they match to within fp16 drift
+  (98.8% token agreement, §1) — no answer changed on this 100-Q set — and distillation
+  preserves the 37.0%. Plots:
   [`plots/accuracy.png`](plots/accuracy.png), [`plots/fwd_per_token.png`](plots/fwd_per_token.png).
-- **~24% forward-pass reduction** post-distillation.
+- **~24% forward-pass reduction at 1.5B** (0.759); **~19% at 8B** (0.808) — see below.
+- *Run provenance:* this 0.759 is the corrected **MPS / 100-Q / cached-decoder** run.
+  The earlier **V100 / 200-Q / full-recompute** run reported 0.816 for the same step.
+  That difference is run setup (decoder, hardware, eval size) — **not** the
+  repetition_penalty fix, which only affected the *accuracy* baseline, not pass counts.
 - The 8B V100 run showed the same forward-pass effect (1.000 → 0.808); its *accuracy*
   comparison still uses the rep-penalty baseline and should be re-run pure-argmax on
   the box (the equivalence proof is code-identical, so it holds at 8B).
@@ -67,9 +77,16 @@ greedy's KV arithmetic) is closer than the full-recompute one. Plot:
 ## 3. Wall-clock
 
 Post-distillation cached Jacobi vs pure-argmax greedy: **1.10× on M2/MPS** (27.24 vs
-24.80 tok/s). The earlier V100 measurement showed **1.54×**, but against HF
-`generate()` (per-step Python overhead), so part of that margin was lean-loop-vs-
-`generate`. Plot: [`plots/wallclock_tokens_per_sec.png`](plots/wallclock_tokens_per_sec.png).
+24.80 tok/s). Plot: [`plots/wallclock_tokens_per_sec.png`](plots/wallclock_tokens_per_sec.png).
+
+**Why 1.10× and not ~1.32×:** the 0.759 forward-passes/token would imply ~1.32× *if
+every forward cost the same*. It doesn't — each Jacobi iteration forwards a whole
+n=16-token block, which costs more than a single greedy step (measured ~1.2× a
+single-token forward in this memory-bound regime). So the wall-clock gain
+(1.10×) is below the pass-count reduction (1.32×); the gap is exactly that
+per-iteration block cost. The earlier V100 measurement showed **1.54×**, but against
+HF `generate()` (per-step Python overhead), so part of that margin was
+lean-loop-vs-`generate`, not pure compute.
 
 - **Always `--merge-lora`** for inference: unmerged LoRA adds a per-forward matmul tax
   that erased the speedup (was 11.96 vs 25.46 tok/s on V100).

@@ -90,8 +90,8 @@ for b, v in zip(bars, fwd):
             ha="center", va="bottom", fontsize=10)
 ax.axhline(1.0, ls="--", c="k", lw=0.8, alpha=0.5)
 ax.set_ylim(0, 1.15); ax.set_ylabel("forward passes / token (lower = faster)")
-ax.set_title("Distillation cuts forward passes ~24% (Qwen2.5-1.5B, 100 Q)\n"
-             "[8B run: 1.000 -> 0.808, same effect]")
+ax.set_title("Distillation cuts forward passes: ~24% at 1.5B (0.759)\n"
+             "[8B run: 1.000 -> 0.808, ~19% -- effect is smaller at 8B]")
 fig.tight_layout(); fig.savefig(f"{OUT}/fwd_per_token.png", dpi=140); plt.close(fig)
 
 # ---- Plot 3: accuracy (corrected, SE bars) ---------------------------------
