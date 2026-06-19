@@ -234,23 +234,28 @@ def block_text_html(block):
     return '<div class="itext">' + "<br>".join(lines) + "</div>"
 
 
-def render_side(label, side, label_for):
-    """One model's blocks: stats line + per-block grid and per-iteration text."""
+def render_side_header(label, side):
+    """The model label + one-line stats (rendered once, above the per-block rows)."""
     s = side["stats"]
     st.markdown(f"#### {label}")
     st.caption(
         f"blocks **{s['blocks']}** · forward passes **{s['total_iters']}** · "
         f"tokens **{s['tokens']}** · fwd/token **{s['fwd_per_token']:.3f}**"
     )
-    for b in side["blocks"]:
-        eos = " · reached EOS (generation stops)" if b.get("has_eos") else ""
-        st.markdown(
-            f"**Block {b['block_index']}** — converged in **{b['n_iters']}** "
-            f"forward passes{eos}"
-        )
-        st.markdown(block_grid_html(label_for, b), unsafe_allow_html=True)
-        with st.expander("decoded text at each iteration"):
-            st.markdown(block_text_html(b), unsafe_allow_html=True)
+
+
+def render_block(block, label_for):
+    """One block: header + convergence grid + decoded-text expander (no-op if None)."""
+    if block is None:
+        return
+    eos = " · reached EOS (generation stops)" if block.get("has_eos") else ""
+    st.markdown(
+        f"**Block {block['block_index']}** — converged in **{block['n_iters']}** "
+        f"forward passes{eos}"
+    )
+    st.markdown(block_grid_html(label_for, block), unsafe_allow_html=True)
+    with st.expander("decoded text at each iteration"):
+        st.markdown(block_text_html(block), unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -385,13 +390,25 @@ def page_prompt(d, p, label_for):
     st.markdown(GRID_CSS + LEGEND, unsafe_allow_html=True)
 
     if have_post:
-        col_pre, col_post = st.columns(2)
-        with col_pre:
-            render_side("PRE — base model", p["pre"], label_for)
-        with col_post:
-            render_side("POST — CLLM-distilled", p["post"], label_for)
+        # One columns-row PER block index, so PRE block i and POST block i start at the
+        # same vertical position (the row is as tall as its taller side). POST blocks are
+        # shorter, so they simply leave whitespace below — keeping every block aligned.
+        hc1, hc2 = st.columns(2)
+        with hc1:
+            render_side_header("PRE — base model", p["pre"])
+        with hc2:
+            render_side_header("POST — CLLM-distilled", p["post"])
+        pre_bl, post_bl = p["pre"]["blocks"], p["post"]["blocks"]
+        for i in range(max(len(pre_bl), len(post_bl))):
+            c1, c2 = st.columns(2)
+            with c1:
+                render_block(pre_bl[i] if i < len(pre_bl) else None, label_for)
+            with c2:
+                render_block(post_bl[i] if i < len(post_bl) else None, label_for)
     else:
-        render_side("PRE — base model", p["pre"], label_for)
+        render_side_header("PRE — base model", p["pre"])
+        for b in p["pre"]["blocks"]:
+            render_block(b, label_for)
 
 
 # --------------------------------------------------------------------------- #
