@@ -39,17 +39,51 @@ st.set_page_config(page_title="Jacobi trajectories — CLLM", layout="wide", pag
 # --------------------------------------------------------------------------- #
 #  Data discovery + loading                                                     #
 # --------------------------------------------------------------------------- #
-def discover_runs():
-    """Map a friendly label -> path for every trajectory_data.json we can find.
+def _run_meta(path):
+    """Describe a run from its JSON: loss variant, depth, mean speedup (for labeling)."""
+    d = load_run(path)
+    P = d["prompts"]
+    rr = [speedup(p) for p in P if p.get("post")]
+    adapter = d.get("lora_adapter") or ""
+    # The `--ar-loss full` adapters (named *cllmexact) replicate CLLM's loss exactly —
+    # the "aggressive", paper-faithful variant. Everything else is the milder AR loss.
+    exact = "exact" in adapter.lower()
+    return {
+        "path": path, "adapter": adapter, "exact": exact,
+        "max_blocks": d.get("max_blocks"), "prompts": len(P),
+        "speedup": (sum(rr) / len(rr)) if rr else None,
+        "key": (d.get("model"), adapter, d.get("n"), d.get("max_blocks"), len(P)),
+    }
 
-    Top-level file is the latest run; archive/<name>/ holds preserved runs.
+
+def discover_runs():
+    """Ordered {descriptive label -> path} for every distinct run we can find.
+
+    The exact/aggressive (paper-faithful) run is listed FIRST so it's the default; runs
+    are labeled by loss variant + speedup, and exact duplicates are collapsed.
     """
-    runs = {}
+    paths = []
     top = os.path.join(APP_DIR, "trajectory_data.json")
     if os.path.exists(top):
-        runs["latest (top level)"] = top
-    for p in sorted(glob.glob(os.path.join(APP_DIR, "archive", "*", "trajectory_data.json"))):
-        runs[os.path.basename(os.path.dirname(p))] = p
+        paths.append(top)
+    paths += sorted(glob.glob(os.path.join(APP_DIR, "archive", "*", "trajectory_data.json")))
+
+    metas, seen = [], set()
+    for p in paths:
+        m = _run_meta(p)
+        if m["key"] in seen:           # same model+adapter+depth = same run; keep one
+            continue
+        seen.add(m["key"])
+        metas.append(m)
+    # aggressive/exact first, then deeper runs (more blocks) first
+    metas.sort(key=lambda m: (not m["exact"], -(m["max_blocks"] or 0)))
+
+    runs = {}
+    for m in metas:
+        variant = ("exact CLLM · full-AR loss (aggressive, paper-faithful)"
+                   if m["exact"] else "standard AR loss (milder)")
+        sp = f" · {m['speedup']:.2f}×" if m["speedup"] else ""
+        runs[f"{variant} · {m['max_blocks']} blk{sp}"] = m["path"]
     return runs
 
 
