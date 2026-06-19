@@ -1,0 +1,13 @@
+# Theme for the Jacobi-trajectory dashboard. Matches the static report's palette
+# (settled-green / unsettled-pink, CLLM red accent).
+[theme]
+base = "light"
+primaryColor = "#C44E52"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#fafafa"
+textColor = "#1a1a1a"
+font = "sans serif"
+
+[server]
+# Keep large trajectory JSONs uploadable from the sidebar.
+maxUploadSize = 50

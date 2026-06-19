@@ -1,0 +1,11 @@
+# Dependencies for the Jacobi-trajectory Streamlit dashboard (streamlit_app.py).
+# Deliberately tiny: the app reads decoded text straight from trajectory_data.json,
+# so it needs no torch / no model. pandas comes bundled with streamlit but is pinned
+# here for clarity.
+streamlit>=1.50
+pandas>=2.0
+
+# OPTIONAL — uncomment to label each grid cell with its per-token text. Adds a heavy
+# dependency and a one-time tokenizer download on first run; the dashboard is fully
+# legible without it (colored convergence grid + decoded text per iteration).
+# transformers>=4.44
