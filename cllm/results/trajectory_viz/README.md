@@ -20,10 +20,19 @@ streamlit run cllm/results/trajectory_viz/streamlit_app.py
 
 The sidebar picks the run (the top-level file or any `archive/<name>/`), switches
 between the Overview and individual prompts, and can **upload** any other
-`trajectory_data.json`. The "per-token cell labels" toggle is optional: it prints the
-token text in each grid cell and only works if `transformers` is installed (uncomment
-it in `requirements.txt`); without it the colored convergence grid + per-iteration text
-already tell the whole story.
+`trajectory_data.json`.
+
+Grid cells are labeled with their token text from a compact `tok_display` map
+(`{token_id: text}`) baked into the JSON, so **no tokenizer is needed at runtime**.
+`visualize_trajectory.py` now writes that map automatically; for JSONs produced before
+this change, retro-fit it once:
+
+```bash
+python cllm/enrich_trajectory_json.py cllm/results/trajectory_viz/trajectory_data.json
+```
+
+Only a JSON missing the map falls back to an optional "per-token cell labels" toggle
+(loads a tokenizer via `transformers`).
 
 ### Share it (Streamlit Community Cloud — free)
 

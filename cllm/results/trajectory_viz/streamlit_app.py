@@ -167,13 +167,13 @@ LEGEND = (
 )
 
 
-def _cell(tok, tid, cls):
-    disp = tok_cell(tok, tid)
+def _cell(label_for, tid, cls):
+    disp = label_for(tid)
     short = disp if len(disp) <= 8 else disp[:7] + "…"
     return f'<td class="{cls}" title="{_html.escape(disp) or tid}">{_html.escape(short)}</td>'
 
 
-def block_grid_html(tok, block):
+def block_grid_html(label_for, block):
     states, fixed = block["states"], block["states"][-1]
     rows = []
     for i, row in enumerate(states):
@@ -183,7 +183,7 @@ def block_grid_html(tok, block):
             cls = "settled" if tid == fixed[p] else "unsettled"
             if i > 0 and tid != states[i - 1][p]:
                 cls += " changed"
-            cells.append(_cell(tok, tid, cls))
+            cells.append(_cell(label_for, tid, cls))
         rows.append(f"<tr>{''.join(cells)}</tr>")
     return f'<div class="gridwrap"><table class="jgrid">{"".join(rows)}</table></div>'
 
@@ -200,7 +200,7 @@ def block_text_html(block):
     return '<div class="itext">' + "<br>".join(lines) + "</div>"
 
 
-def render_side(label, side, tok):
+def render_side(label, side, label_for):
     """One model's blocks: stats line + per-block grid and per-iteration text."""
     s = side["stats"]
     st.markdown(f"#### {label}")
@@ -214,7 +214,7 @@ def render_side(label, side, tok):
             f"**Block {b['block_index']}** — converged in **{b['n_iters']}** "
             f"forward passes{eos}"
         )
-        st.markdown(block_grid_html(tok, b), unsafe_allow_html=True)
+        st.markdown(block_grid_html(label_for, b), unsafe_allow_html=True)
         with st.expander("decoded text at each iteration"):
             st.markdown(block_text_html(b), unsafe_allow_html=True)
 
@@ -310,7 +310,7 @@ def page_overview(d):
             st.line_chart(drift_df[["cumulative fraction diverged"]])
 
 
-def page_prompt(d, p, tok):
+def page_prompt(d, p, label_for):
     have_post = bool(p.get("post"))
     st.subheader(f"Prompt #{p['idx']}")
 
@@ -330,9 +330,9 @@ def page_prompt(d, p, tok):
     )
     if fd:
         j, pos = fd["block"], fd["pos"]
-        pre_tok, post_tok = tok_cell(tok, fd["pre_id"]), tok_cell(tok, fd["post_id"])
+        pre_tok, post_tok = label_for(fd["pre_id"]), label_for(fd["post_id"])
         tok_note = (f": base → `{pre_tok}` vs distilled → `{post_tok}`"
-                    if tok is not None else "")
+                    if (pre_tok or post_tok) else "")
         st.warning(
             f"**First greedy-equivalence break:** block {j}, position {pos} — identical "
             f"context up to here, so this is a real divergence, not a downstream "
@@ -353,11 +353,11 @@ def page_prompt(d, p, tok):
     if have_post:
         col_pre, col_post = st.columns(2)
         with col_pre:
-            render_side("PRE — base model", p["pre"], tok)
+            render_side("PRE — base model", p["pre"], label_for)
         with col_post:
-            render_side("POST — CLLM-distilled", p["post"], tok)
+            render_side("POST — CLLM-distilled", p["post"], label_for)
     else:
-        render_side("PRE — base model", p["pre"], tok)
+        render_side("PRE — base model", p["pre"], label_for)
 
 
 # --------------------------------------------------------------------------- #
@@ -405,23 +405,36 @@ def main():
         ]
         view = st.radio("view", labels, index=0, label_visibility="collapsed")
 
-        st.divider()
-        want_labels = st.toggle(
-            "per-token cell labels", value=False,
-            help="Loads the tokenizer (needs `transformers`) to print the token text in "
-                 "each grid cell. Off = colored grid only (lighter, no extra deps).",
-        )
+        # Grid cells are labeled from the precomputed `tok_display` map baked into the
+        # JSON (no runtime tokenizer). Only JSONs lacking it expose a live-tokenizer
+        # toggle (needs `transformers`); enrich with cllm/enrich_trajectory_json.py.
+        disp_map = d.get("tok_display")
+        want_labels = False
+        if not disp_map:
+            st.divider()
+            want_labels = st.toggle(
+                "per-token cell labels", value=False,
+                help="This run has no baked-in token map. Load the tokenizer (needs "
+                     "`transformers`) to label cells, or run enrich_trajectory_json.py.",
+            )
 
     tok = get_tokenizer(d.get("model", "")) if want_labels else None
     if want_labels and tok is None:
         st.sidebar.warning("Couldn't load a tokenizer (is `transformers` installed?). "
                            "Showing the colored grid without per-token labels.")
 
+    if tok is not None:
+        label_for = lambda tid: tok_cell(tok, tid)          # live tokenizer
+    elif disp_map:
+        label_for = lambda tid: disp_map.get(str(tid), "")  # precomputed map (default)
+    else:
+        label_for = lambda tid: ""                          # colored grid only
+
     if view == "📊 Overview":
         page_overview(d)
     else:
         idx = int(labels.index(view)) - 1
-        page_prompt(d, d["prompts"][idx], tok)
+        page_prompt(d, d["prompts"][idx], label_for)
 
 
 if __name__ == "__main__":
